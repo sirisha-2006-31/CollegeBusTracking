@@ -1,3 +1,4 @@
+
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import axios from "axios";
 import {
@@ -5,7 +6,7 @@ import {
     TileLayer,
     Marker,
     Popup,
-    Polyline
+    Polyline,
 } from "react-leaflet";
 import { io } from "socket.io-client";
 import "leaflet/dist/leaflet.css";
@@ -25,313 +26,395 @@ L.Icon.Default.mergeOptions({
 
 const API_URL = "http://localhost:5000";
 
-function StudentTracking() {
+// Required routes and stop order
+const BUS_ROUTE_CONFIG = {
+    BUS001: {
+        routeName: "Route 1",
+        startPoint: "Gajuwaka",
+        endPoint: "Kommadi",
+        stopNames: ["Gajuwaka", "NAD", "Gurudwara", "Kommadi"],
+    },
+    BUS003: {
+        routeName: "Route 2",
+        startPoint: "MVP Colony",
+        endPoint: "Kommadi",
+        stopNames: [
+            "MVP Colony",
+            "Akkayapalem",
+            "Madhurawada",
+            "Kommadi",
+        ],
+    },
+};
 
-    // --------------------------------------------------
-    // Notification permission
-    // --------------------------------------------------
+const normalizeName = (value) =>
+    String(value || "")
+        .trim()
+        .toLowerCase()
+        .replace(/\s+/g, " ");
+
+function StudentTracking() {
+    const [currentUser] = useState(() => {
+        try {
+            return JSON.parse(localStorage.getItem("user") || "null");
+        } catch {
+            return null;
+        }
+    });
+
+    const canSubmitFeedback = ["student", "parent"].includes(
+        String(currentUser?.role || "").toLowerCase()
+    );
+
+    const [buses, setBuses] = useState([]);
+    const [busStops, setBusStops] = useState([]);
+    const [selectedBus, setSelectedBus] = useState("");
+    const [selectedStop, setSelectedStop] = useState("");
+    const [busLocation, setBusLocation] = useState(null);
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState("");
+
+    // Feedback state
+    const [rating, setRating] = useState(0);
+    const [comments, setComments] = useState("");
+    const [feedbackMessage, setFeedbackMessage] = useState("");
+    const [feedbackLoading, setFeedbackLoading] = useState(false);
+    const [existingFeedback, setExistingFeedback] = useState(false);
+
+    // Prevent repeated notifications for the same selection
+    const notificationSentRef = useRef({
+        fiveMinute: false,
+        arriving: false,
+    });
+
+    const getFeedbackConfig = () => ({
+        headers: {
+            Authorization: `Bearer ${localStorage.getItem("token")}`,
+        },
+    });
+
+    // Load the logged-in user's existing feedback
+    const loadMyFeedback = async () => {
+        try {
+            const response = await axios.get(
+                `${API_URL}/api/feedback/mine`,
+                getFeedbackConfig()
+            );
+
+            const feedback = response.data?.feedback ?? response.data;
+
+            if (
+                feedback &&
+                typeof feedback === "object" &&
+                feedback.rating != null
+            ) {
+                setRating(Number(feedback.rating));
+                setComments(feedback.comments || "");
+                setExistingFeedback(true);
+            } else {
+                setExistingFeedback(false);
+            }
+        } catch (err) {
+            if (err.response?.status !== 404) {
+                console.error("Unable to load previous feedback:", err);
+            }
+        }
+    };
+
+    // Submit new feedback or update existing feedback
+    const submitFeedback = async (event) => {
+        event.preventDefault();
+        setFeedbackMessage("");
+
+        if (!Number.isInteger(rating) || rating < 1 || rating > 5) {
+            setFeedbackMessage("Please select a rating from 1 to 5 stars.");
+            return;
+        }
+
+        if (comments.length > 1000) {
+            setFeedbackMessage("Comments must be 1000 characters or fewer.");
+            return;
+        }
+
+        setFeedbackLoading(true);
+
+        try {
+            await axios.put(
+                `${API_URL}/api/feedback`,
+                { rating, comments },
+                getFeedbackConfig()
+            );
+
+            setExistingFeedback(true);
+            setFeedbackMessage("Thank you! Your feedback has been saved.");
+        } catch (err) {
+            setFeedbackMessage(
+                err.response?.data?.message ||
+                    err.response?.data?.error ||
+                    "Unable to submit feedback. Check your login and backend."
+            );
+        } finally {
+            setFeedbackLoading(false);
+        }
+    };
+
+    // Request browser notification permission
     useEffect(() => {
-        if ("Notification" in window) {
-            Notification.requestPermission();
+        if (
+            "Notification" in window &&
+            Notification.permission === "default"
+        ) {
+            Notification.requestPermission().catch(() => {});
         }
     }, []);
 
-    // --------------------------------------------------
-    // Send browser notification
-    // --------------------------------------------------
+    // Load previous feedback when the page opens
+    useEffect(() => {
+        if (localStorage.getItem("token")) {
+            loadMyFeedback();
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
     const sendNotification = (title, message) => {
         if (
             "Notification" in window &&
             Notification.permission === "granted"
         ) {
-            new Notification(title, {
-                body: message
-            });
+            new Notification(title, { body: message });
         }
     };
 
-    const [buses, setBuses] = useState([]);
-    const [busStops, setBusStops] = useState([]);
-
-    // Nothing selected when page opens/refreshed
-    const [selectedBus, setSelectedBus] = useState("");
-    const [selectedStop, setSelectedStop] = useState("");
-
-    const [currentBus, setCurrentBus] = useState(null);
-    const [busLocation, setBusLocation] = useState(null);
-
-    const [loading, setLoading] = useState(true);
-    const [error, setError] = useState("");
-
-    // Prevent repeated notifications
-    const notificationSentRef = useRef({
-        fiveMinute: false,
-        arriving: false
-    });
-
-    // --------------------------------------------------
-    // Load buses and bus stops
-    // --------------------------------------------------
+    // Load only the logged-in student's assigned bus
     useEffect(() => {
+        let cancelled = false;
+
         const loadData = async () => {
             try {
                 setLoading(true);
                 setError("");
 
-                const [busResponse, stopResponse] = await Promise.all([
-                    axios.get(`${API_URL}/api/buses`),
-                    axios.get(`${API_URL}/api/bus-stops`)
-                ]);
+                const token = localStorage.getItem("token");
 
-                const activeBuses = busResponse.data.filter(
-                    (bus) => bus.status === "active"
-                );
+                if (!token) {
+                    throw new Error(
+                        "Please log in before tracking your assigned bus."
+                    );
+                }
 
-                setBuses(activeBuses);
-                setBusStops(stopResponse.data);
+                const config = {
+                    headers: {
+                        Authorization: `Bearer ${token}`,
+                    },
+                };
 
-                // Nothing selected automatically
-                setSelectedBus("");
+                const [assignedResponse, stopResponse] =
+                    await Promise.all([
+                        axios.get(
+                            `${API_URL}/api/students/my-bus`,
+                            config
+                        ),
+                        axios.get(`${API_URL}/api/bus-stops`),
+                    ]);
+
+                if (cancelled) return;
+
+                const assignedBus = assignedResponse.data?.bus;
+
+                if (!assignedBus?.busNumber) {
+                    throw new Error(
+                        "No bus is assigned to your account. Please contact Admin."
+                    );
+                }
+
+                const stopData = Array.isArray(stopResponse.data)
+                    ? stopResponse.data
+                    : stopResponse.data?.busStops || [];
+
+                // Students cannot choose a different bus.
+                setBuses([assignedBus]);
+                setBusStops(stopData);
+                setSelectedBus(assignedBus.busNumber);
                 setSelectedStop("");
-                setCurrentBus(null);
                 setBusLocation(null);
 
+                notificationSentRef.current = {
+                    fiveMinute: false,
+                    arriving: false,
+                };
             } catch (err) {
-                console.error("Error loading data:", err);
-                setError("Unable to load buses and bus stops.");
+                console.error("Error loading assigned bus:", err);
+
+                if (!cancelled) {
+                    setBuses([]);
+                    setSelectedBus("");
+                    setSelectedStop("");
+                    setBusLocation(null);
+
+                    setError(
+                        err.response?.data?.message ||
+                            err.message ||
+                            "Unable to load your assigned bus."
+                    );
+                }
             } finally {
-                setLoading(false);
+                if (!cancelled) {
+                    setLoading(false);
+                }
             }
         };
 
         loadData();
+
+        return () => {
+            cancelled = true;
+        };
     }, []);
 
-    // --------------------------------------------------
-    // Find selected bus
-    // --------------------------------------------------
-    useEffect(() => {
-        if (!selectedBus) {
-            setCurrentBus(null);
-            setBusLocation(null);
-            return;
-        }
+    const currentBus = useMemo(
+        () => buses.find((bus) => bus.busNumber === selectedBus) || null,
+        [buses, selectedBus]
+    );
 
-        const bus = buses.find(
-            (item) => item.busNumber === selectedBus
-        );
+    const routeConfig = BUS_ROUTE_CONFIG[selectedBus] || null;
 
-        setCurrentBus(bus || null);
-        setBusLocation(null);
+    // Get stops for the assigned bus's route, in the configured order
+    const routeStops = useMemo(() => {
+        if (!routeConfig) return [];
 
-        // Reset notification status for new bus
+        const assignedRouteId = currentBus?.route?._id;
+
+        return routeConfig.stopNames.map((name) => {
+            const matchingStop = busStops.find((stop) => {
+                const stopRouteId = stop.route?._id || stop.route;
+
+                return (
+                    normalizeName(stop.stopName) === normalizeName(name) &&
+                    (
+                        !assignedRouteId ||
+                        String(stopRouteId) === String(assignedRouteId)
+                    )
+                );
+            });
+
+            return (
+                matchingStop || {
+                    _id: `missing-${normalizeName(name).replace(/\s/g, "-")}`,
+                    stopName: name,
+                    latitude: null,
+                    longitude: null,
+                    missingCoordinates: true,
+                }
+            );
+        });
+    }, [routeConfig, busStops, currentBus]);
+
+    const selectedStopData = useMemo(
+        () =>
+            routeStops.find(
+                (stop) =>
+                    normalizeName(stop.stopName) ===
+                    normalizeName(selectedStop)
+            ) || null,
+        [routeStops, selectedStop]
+    );
+
+    // Students can choose a stop, but not another bus
+    const handleStopChange = (event) => {
+        setSelectedStop(event.target.value);
+
         notificationSentRef.current = {
             fiveMinute: false,
-            arriving: false
+            arriving: false,
         };
+    };
 
-    }, [selectedBus, buses]);
-
-    // --------------------------------------------------
-    // Get stops belonging to selected bus route
-    // --------------------------------------------------
-    const routeStops = useMemo(() => {
-        if (!currentBus || !currentBus.route) {
-            return [];
-        }
-
-        const routeId =
-            typeof currentBus.route === "object"
-                ? currentBus.route._id
-                : currentBus.route;
-
-        return busStops.filter((stop) => {
-            const stopRouteId =
-                typeof stop.route === "object"
-                    ? stop.route._id
-                    : stop.route;
-
-            return stopRouteId === routeId;
-        });
-    }, [currentBus, busStops]);
-
-    // --------------------------------------------------
-    // Socket.IO - receive live bus location
-    // --------------------------------------------------
+    // Receive live GPS location
     useEffect(() => {
+        if (!selectedBus) return;
+
         const socket = io(API_URL, {
-            transports: ["websocket"]
+            transports: ["websocket", "polling"],
         });
 
-        socket.on("busLocation", (location) => {
-            console.log("Live bus location received:", location);
-
-            if (!selectedBus) {
-                return;
-            }
+        const handleLocation = (location) => {
+            const receivedBusId =
+                location.busNumber ??
+                location.busId ??
+                location.bus?.busNumber ??
+                location.bus?.busId;
 
             if (
-                location.busId === selectedBus ||
-                location.busNumber === selectedBus
+                receivedBusId != null &&
+                String(receivedBusId) === selectedBus
             ) {
                 setBusLocation(location);
             }
-        });
+        };
+
+        socket.on("busLocation", handleLocation);
 
         return () => {
+            socket.off("busLocation", handleLocation);
             socket.disconnect();
         };
     }, [selectedBus]);
 
-    // --------------------------------------------------
-    // When bus changes
-    // --------------------------------------------------
-    const handleBusChange = (event) => {
-        const busNumber = event.target.value;
-
-        setSelectedBus(busNumber);
-        setSelectedStop("");
-        setBusLocation(null);
-
-        notificationSentRef.current = {
-            fiveMinute: false,
-            arriving: false
-        };
-    };
-
-    // --------------------------------------------------
-    // When stop changes
-    // --------------------------------------------------
-    const handleStopChange = (event) => {
-        setSelectedStop(event.target.value);
-
-        // Reset notification status for new stop
-        notificationSentRef.current = {
-            fiveMinute: false,
-            arriving: false
-        };
-    };
-
-    // --------------------------------------------------
-    // Find selected stop
-    // --------------------------------------------------
-    const selectedStopData = useMemo(() => {
-        if (!selectedStop) {
-            return null;
-        }
-
-        return routeStops.find(
-            (stop) => stop.stopName === selectedStop
-        );
-    }, [selectedStop, routeStops]);
-
-    // --------------------------------------------------
-    // Haversine distance
-    // --------------------------------------------------
-    const calculateDistance = (
-        lat1,
-        lon1,
-        lat2,
-        lon2
-    ) => {
+    // Calculate distance using the Haversine formula
+    const calculateDistance = (lat1, lon1, lat2, lon2) => {
         const R = 6371;
-
-        const dLat =
-            ((lat2 - lat1) * Math.PI) / 180;
-
-        const dLon =
-            ((lon2 - lon1) * Math.PI) / 180;
+        const dLat = ((lat2 - lat1) * Math.PI) / 180;
+        const dLon = ((lon2 - lon1) * Math.PI) / 180;
 
         const a =
-            Math.sin(dLat / 2) *
-                Math.sin(dLat / 2) +
+            Math.sin(dLat / 2) ** 2 +
             Math.cos((lat1 * Math.PI) / 180) *
                 Math.cos((lat2 * Math.PI) / 180) *
-                Math.sin(dLon / 2) *
-                Math.sin(dLon / 2);
+                Math.sin(dLon / 2) ** 2;
 
-        const c =
-            2 *
-            Math.atan2(
-                Math.sqrt(a),
-                Math.sqrt(1 - a)
-            );
-
-        return R * c;
+        return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
     };
 
-    // --------------------------------------------------
-    // Distance to selected stop
-    // --------------------------------------------------
     const distance = useMemo(() => {
-        if (!busLocation || !selectedStopData) {
-            return null;
-        }
+        if (!busLocation || !selectedStopData) return null;
 
-        const busLat = Number(busLocation.latitude);
-        const busLon = Number(busLocation.longitude);
-
+        const busLat = Number(busLocation.latitude ?? busLocation.lat);
+        const busLon = Number(
+            busLocation.longitude ?? busLocation.lon ?? busLocation.lng
+        );
         const stopLat = Number(selectedStopData.latitude);
-        const stopLon = Number(selectedStopData.longitude);
+        const stopLon = Number(
+            selectedStopData.longitude ?? selectedStopData.lon
+        );
 
         if (
-            Number.isNaN(busLat) ||
-            Number.isNaN(busLon) ||
-            Number.isNaN(stopLat) ||
-            Number.isNaN(stopLon)
+            !Number.isFinite(busLat) ||
+            !Number.isFinite(busLon) ||
+            !Number.isFinite(stopLat) ||
+            !Number.isFinite(stopLon)
         ) {
             return null;
         }
 
-        return calculateDistance(
-            busLat,
-            busLon,
-            stopLat,
-            stopLon
-        );
+        return calculateDistance(busLat, busLon, stopLat, stopLon);
     }, [busLocation, selectedStopData]);
 
-    // --------------------------------------------------
-    // ETA calculation
-    // --------------------------------------------------
     const eta = useMemo(() => {
-        if (distance === null) {
-            return null;
-        }
+        if (distance === null) return null;
 
-        let speed = Number(busLocation?.speed);
+        const rawSpeed = Number(busLocation?.speed);
+        const speedKmh =
+            Number.isFinite(rawSpeed) && rawSpeed > 1
+                ? rawSpeed * 3.6
+                : 30;
 
-        // Demo/project speed if GPS speed is unavailable
-        if (!speed || speed <= 1) {
-            speed = 30;
-        } else {
-            // GPS speed normally comes in m/s
-            speed = speed * 3.6;
-        }
-
-        const timeHours = distance / speed;
-        const timeMinutes = Math.round(timeHours * 60);
-
-        if (timeMinutes <= 0) {
-            return 1;
-        }
-
-        return timeMinutes;
+        return Math.max(1, Math.round((distance / speedKmh) * 60));
     }, [distance, busLocation]);
 
-    // --------------------------------------------------
-    // ETA NOTIFICATIONS
-    // --------------------------------------------------
+    // Notify the student when the bus is close
     useEffect(() => {
-        if (
-            !selectedBus ||
-            !selectedStop ||
-            eta === null
-        ) {
-            return;
-        }
+        if (!selectedBus || !selectedStop || eta === null) return;
 
-        // 5-minute warning
         if (
             eta <= 5 &&
             eta > 1 &&
@@ -339,144 +422,119 @@ function StudentTracking() {
         ) {
             sendNotification(
                 "🚌 Bus Arriving Soon",
-                `${selectedBus} will arrive at ${selectedStop} in about ${eta} minutes.`
+                `${selectedBus} may reach ${selectedStop} in about ${eta} minutes.`
             );
 
             notificationSentRef.current.fiveMinute = true;
         }
 
-        // Bus arriving notification
-        if (
-            eta <= 1 &&
-            !notificationSentRef.current.arriving
-        ) {
+        if (eta <= 1 && !notificationSentRef.current.arriving) {
             sendNotification(
                 "🚌 Bus Arriving",
-                `${selectedBus} is arriving at ${selectedStop}.`
+                `${selectedBus} may be arriving at ${selectedStop}.`
             );
 
             notificationSentRef.current.arriving = true;
         }
-
     }, [eta, selectedBus, selectedStop]);
 
-    // --------------------------------------------------
-    // Map center
-    // --------------------------------------------------
-    const mapCenter = useMemo(() => {
-        if (busLocation) {
-            return [
-                Number(busLocation.latitude),
-                Number(busLocation.longitude)
-            ];
-        }
+    // Only show stops with valid coordinates on the map
+    const validRouteStops = useMemo(
+        () =>
+            routeStops.filter((stop) => {
+                const lat = Number(stop.latitude);
+                const lon = Number(stop.longitude ?? stop.lon);
 
-        if (selectedStopData) {
-            return [
-                Number(selectedStopData.latitude),
-                Number(selectedStopData.longitude)
-            ];
-        }
+                return (
+                    Number.isFinite(lat) &&
+                    Number.isFinite(lon) &&
+                    lat >= -90 &&
+                    lat <= 90 &&
+                    lon >= -180 &&
+                    lon <= 180
+                );
+            }),
+        [routeStops]
+    );
 
-        // Default Visakhapatnam location
-        return [17.6868, 83.2185];
-
-    }, [busLocation, selectedStopData]);
-
-    // --------------------------------------------------
-    // Route line
-    // --------------------------------------------------
-    const routeLine = useMemo(() => {
-        if (!routeStops.length) {
-            return [];
-        }
-
-        return routeStops
-            .map((stop) => [
+    const routeLine = useMemo(
+        () =>
+            validRouteStops.map((stop) => [
                 Number(stop.latitude),
-                Number(stop.longitude)
-            ])
-            .filter(
-                (point) =>
-                    !Number.isNaN(point[0]) &&
-                    !Number.isNaN(point[1])
-            );
+                Number(stop.longitude ?? stop.lon),
+            ]),
+        [validRouteStops]
+    );
 
-    }, [routeStops]);
+    const busLat = Number(busLocation?.latitude ?? busLocation?.lat);
+    const busLon = Number(
+        busLocation?.longitude ?? busLocation?.lon ?? busLocation?.lng
+    );
 
-    // --------------------------------------------------
-    // Loading screen
-    // --------------------------------------------------
+    const hasValidBusLocation =
+        busLocation &&
+        Number.isFinite(busLat) &&
+        Number.isFinite(busLon) &&
+        busLat >= -90 &&
+        busLat <= 90 &&
+        busLon >= -180 &&
+        busLon <= 180;
+
+    const mapCenter = hasValidBusLocation
+        ? [busLat, busLon]
+        : validRouteStops.length > 0
+          ? [
+                Number(validRouteStops[0].latitude),
+                Number(validRouteStops[0].longitude ?? validRouteStops[0].lon),
+            ]
+          : [17.6868, 83.2185];
+
     if (loading) {
         return (
             <div style={styles.page}>
                 <h1>🎓 Student Live Bus Tracking</h1>
-                <p>
-                    Loading buses and bus stops...
-                </p>
+                <p>Loading your assigned bus and bus stops...</p>
             </div>
         );
     }
 
     return (
         <div style={styles.page}>
-
-            <h1>
-                🎓 Student Live Bus Tracking
-            </h1>
+            <h1>🎓 Student Live Bus Tracking</h1>
 
             <p style={styles.subtitle}>
-                Select your bus and the stop where
-                you want to get on.
+                Track your assigned bus and select the stop where you want
+                to get on.
             </p>
 
-            {error && (
-                <div style={styles.error}>
-                    {error}
-                </div>
-            )}
+            {error && <div style={styles.error}>{error}</div>}
 
-            {/* BUS DROPDOWN */}
-
+            {/* ASSIGNED BUS */}
             <div style={styles.card}>
-
-                <label style={styles.label}>
-                    🚌 Bus
-                </label>
+                <label style={styles.label}>🚌 Your Assigned Bus</label>
 
                 <select
                     value={selectedBus}
-                    onChange={handleBusChange}
+                    disabled
                     style={styles.select}
                 >
-
-                    <option value="">
-                        Select bus
-                    </option>
-
                     {buses.map((bus) => (
-                        <option
-                            key={bus._id}
-                            value={bus.busNumber}
-                        >
+                        <option key={bus._id} value={bus.busNumber}>
                             {bus.busNumber}
-                            {bus.busName
-                                ? ` - ${bus.busName}`
-                                : ""}
+                            {bus.busName ? ` - ${bus.busName}` : ""}
                         </option>
                     ))}
-
                 </select>
 
+                <p style={styles.helpText}>
+                    This bus is assigned to your account. Contact Admin if
+                    the assignment is incorrect.
+                </p>
             </div>
 
-            {/* STOP DROPDOWN */}
-
+            {/* STOP SELECTION */}
             <div style={styles.card}>
-
-                <label style={styles.label}>
-                    🚏 Your Stop
-                </label>
+                <label style={styles.label}>🚏 Your Stop</label>
 
                 <select
                     value={selectedStop}
@@ -484,297 +542,284 @@ function StudentTracking() {
                     disabled={!selectedBus}
                     style={styles.select}
                 >
-
-                    <option value="">
-                        Select bus stop
-                    </option>
+                    <option value="">Select bus stop</option>
 
                     {routeStops.map((stop) => (
-                        <option
-                            key={stop._id}
-                            value={stop.stopName}
-                        >
+                        <option key={stop._id} value={stop.stopName}>
                             {stop.stopName}
+                            {stop.missingCoordinates
+                                ? " (stop record missing)"
+                                : ""}
                         </option>
                     ))}
-
                 </select>
 
                 {!selectedBus && (
                     <p style={styles.helpText}>
-                        Please select a bus first.
+                        Your assigned bus could not be loaded.
                     </p>
                 )}
 
                 {selectedBus &&
-                    routeStops.length === 0 && (
+                    routeStops.some((stop) => stop.missingCoordinates) && (
                         <p style={styles.warning}>
-                            No stops found for this bus route.
+                            Some stops are missing from the database.
+                            Their map markers and ETA will not work until
+                            the correct stop records and coordinates are added.
                         </p>
                     )}
-
             </div>
 
-            {/* ROUTE INFORMATION */}
-
-            {selectedBus && currentBus?.route && (
+            {/* ROUTE DETAILS */}
+            {routeConfig && (
                 <div style={styles.routeCard}>
-
-                    <h3>
-                        🛣️ Route Information
-                    </h3>
+                    <h3>🛣️ Route Information</h3>
 
                     <p>
-                        <strong>Route:</strong>{" "}
-                        {currentBus.route.routeName ||
-                            "Unknown"}
+                        <strong>Route:</strong> {routeConfig.routeName}
                     </p>
-
                     <p>
-                        <strong>From:</strong>{" "}
-                        {currentBus.route.startPoint ||
-                            "Unknown"}
+                        <strong>From:</strong> {routeConfig.startPoint}
                     </p>
-
                     <p>
-                        <strong>To:</strong>{" "}
-                        {currentBus.route.endPoint ||
-                            "Unknown"}
+                        <strong>To:</strong> {routeConfig.endPoint}
+                    </p>
+                    <p>
+                        <strong>Stops:</strong>{" "}
+                        {routeConfig.stopNames.join(" → ")}
                     </p>
 
+                    {currentBus?.route &&
+                        (
+                            normalizeName(currentBus.route.startPoint) !==
+                                normalizeName(routeConfig.startPoint) ||
+                            normalizeName(currentBus.route.endPoint) !==
+                                normalizeName(routeConfig.endPoint)
+                        ) && (
+                            <p style={styles.warning}>
+                                The assigned bus route in MongoDB does not
+                                match the expected route. Please check the
+                                assignment in the Admin Dashboard.
+                            </p>
+                        )}
                 </div>
             )}
 
             {/* LIVE STATUS */}
-
             {selectedBus && (
                 <div style={styles.statusCard}>
-
-                    {busLocation ? (
+                    {hasValidBusLocation ? (
                         <>
-
-                            <h2>
-                                🟢 Bus is Live
-                            </h2>
+                            <h2>🟢 Bus is Live</h2>
 
                             <p>
-                                <strong>
-                                    Bus ID:
-                                </strong>{" "}
-                                {selectedBus}
+                                <strong>Bus ID:</strong> {selectedBus}
                             </p>
 
                             {selectedStop && (
                                 <p>
-                                    <strong>
-                                        Your Stop:
-                                    </strong>{" "}
-                                    {selectedStop}
+                                    <strong>Your Stop:</strong> {selectedStop}
                                 </p>
                             )}
 
                             {distance !== null && (
                                 <p>
                                     📍 Distance:{" "}
-                                    <strong>
-                                        {distance.toFixed(2)}
-                                        {" "}km
-                                    </strong>
+                                    <strong>{distance.toFixed(2)} km</strong>
                                 </p>
                             )}
 
-                            {eta !== null && (
+                            {selectedStop && eta !== null && (
                                 <p>
-                                    ⏱️ ETA:{" "}
-                                    <strong>
-                                        {eta} minutes
-                                    </strong>
+                                    ⏱️ Estimated arrival:{" "}
+                                    <strong>{eta} minutes</strong>
                                 </p>
                             )}
-
                         </>
                     ) : (
                         <>
-
-                            <h2>
-                                ⏳ Waiting for live location...
-                            </h2>
-
+                            <h2>⏳ Waiting for live location...</h2>
                             <p>
-                                Waiting for the driver
-                                to start GPS tracking.
+                                Waiting for the driver to start GPS tracking.
                             </p>
-
                             <p>
-                                <strong>
-                                    Bus ID:
-                                </strong>{" "}
-                                {selectedBus}
+                                <strong>Bus ID:</strong> {selectedBus}
                             </p>
-
                         </>
                     )}
-
                 </div>
             )}
 
-            {/* MAP */}
-
+            {/* LIVE MAP */}
             {selectedBus && (
                 <div style={styles.mapSection}>
-
-                    <h2>
-                        🗺️ Live Bus Map
-                    </h2>
+                    <h2>🗺️ Live Bus Map</h2>
 
                     <MapContainer
+                        key={selectedBus}
                         center={mapCenter}
                         zoom={13}
                         style={styles.map}
                     >
-
                         <TileLayer
                             attribution="&copy; OpenStreetMap contributors"
                             url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
                         />
 
-                        {/* Route stops */}
-
-                        {routeStops.map((stop) => (
+                        {validRouteStops.map((stop) => (
                             <Marker
                                 key={stop._id}
                                 position={[
                                     Number(stop.latitude),
-                                    Number(stop.longitude)
+                                    Number(stop.longitude ?? stop.lon),
                                 ]}
                             >
-
                                 <Popup>
-
-                                    <strong>
-                                        🚏 {stop.stopName}
-                                    </strong>
-
+                                    <strong>🚏 {stop.stopName}</strong>
                                 </Popup>
-
                             </Marker>
                         ))}
 
-                        {/* Route line */}
-
                         {routeLine.length >= 2 && (
-                            <Polyline
-                                positions={routeLine}
-                            />
+                            <Polyline positions={routeLine} />
                         )}
 
-                        {/* Live bus */}
-
-                        {busLocation &&
-                            !Number.isNaN(
-                                Number(
-                                    busLocation.latitude
-                                )
-                            ) &&
-                            !Number.isNaN(
-                                Number(
-                                    busLocation.longitude
-                                )
-                            ) && (
-
-                                <Marker
-                                    position={[
-                                        Number(
-                                            busLocation.latitude
-                                        ),
-                                        Number(
-                                            busLocation.longitude
-                                        )
-                                    ]}
-                                >
-
-                                    <Popup>
-
-                                        <strong>
-                                            🚌 Live Bus
-                                        </strong>
-
-                                        <br />
-
-                                        Bus:{" "}
-                                        {selectedBus}
-
-                                        <br />
-
-                                        Latitude:{" "}
-                                        {Number(
-                                            busLocation.latitude
-                                        ).toFixed(5)}
-
-                                        <br />
-
-                                        Longitude:{" "}
-                                        {Number(
-                                            busLocation.longitude
-                                        ).toFixed(5)}
-
-                                    </Popup>
-
-                                </Marker>
-                            )}
-
+                        {hasValidBusLocation && (
+                            <Marker position={[busLat, busLon]}>
+                                <Popup>
+                                    <strong>🚌 Live Bus</strong>
+                                    <br />
+                                    Bus: {selectedBus}
+                                    <br />
+                                    Latitude: {busLat.toFixed(5)}
+                                    <br />
+                                    Longitude: {busLon.toFixed(5)}
+                                </Popup>
+                            </Marker>
+                        )}
                     </MapContainer>
-
                 </div>
             )}
 
-            {/* ROUTE STOPS */}
+            {/* ORDERED ROUTE STOPS */}
+            {selectedBus && routeStops.length > 0 && (
+                <div style={styles.stopsCard}>
+                    <h2>🚏 Route Stops</h2>
 
-            {selectedBus &&
-                routeStops.length > 0 && (
+                    <ol>
+                        {routeStops.map((stop) => (
+                            <li key={stop._id} style={styles.stopItem}>
+                                {stop.stopName}
 
-                    <div style={styles.stopsCard}>
+                                {stop.missingCoordinates && (
+                                    <span style={styles.warning}>
+                                        {" "}(add this stop in MongoDB)
+                                    </span>
+                                )}
+                            </li>
+                        ))}
+                    </ol>
+                </div>
+            )}
 
-                        <h2>
-                            🚏 Route Stops
-                        </h2>
+            {/* STUDENT / PARENT FEEDBACK */}
+            {canSubmitFeedback && (
+                <div style={styles.feedbackCard}>
+                    <h2>⭐ Student & Parent Feedback</h2>
+                    <p>Rate your college bus tracking experience.</p>
 
-                        <ol>
+                    <form onSubmit={submitFeedback}>
+                        <label style={styles.label}>
+                            Your Rating (required)
+                        </label>
 
-                            {routeStops.map((stop) => (
-                                <li
-                                    key={stop._id}
-                                    style={styles.stopItem}
+                        <div style={styles.stars}>
+                            {[1, 2, 3, 4, 5].map((star) => (
+                                <button
+                                    key={star}
+                                    type="button"
+                                    onClick={() => setRating(star)}
+                                    aria-label={`${star} star${star > 1 ? "s" : ""}`}
+                                    aria-pressed={rating === star}
+                                    style={{
+                                        ...styles.starButton,
+                                        color:
+                                            star <= rating
+                                                ? "#f59e0b"
+                                                : "#9ca3af",
+                                    }}
                                 >
-                                    {stop.stopName}
-                                </li>
+                                    ★
+                                </button>
                             ))}
+                        </div>
 
-                        </ol>
+                        <p>
+                            {rating > 0
+                                ? `${rating} out of 5 stars`
+                                : "Select a rating"}
+                        </p>
 
-                    </div>
-                )}
+                        <label
+                            htmlFor="feedback-comments"
+                            style={styles.label}
+                        >
+                            Comments (optional)
+                        </label>
 
+                        <textarea
+                            id="feedback-comments"
+                            value={comments}
+                            onChange={(event) => setComments(event.target.value)}
+                            maxLength={1000}
+                            placeholder="Share your experience..."
+                            rows={4}
+                            style={styles.feedbackTextarea}
+                        />
+
+                        <p>{comments.length}/1000 characters</p>
+
+                        <button
+                            type="submit"
+                            disabled={feedbackLoading}
+                            style={{
+                                ...styles.feedbackButton,
+                                opacity: feedbackLoading ? 0.7 : 1,
+                            }}
+                        >
+                            {feedbackLoading
+                                ? "Saving..."
+                                : existingFeedback
+                                  ? "Update Feedback"
+                                  : "Submit Feedback"}
+                        </button>
+
+                        {feedbackMessage && (
+                            <p
+                                role="status"
+                                style={styles.feedbackMessage}
+                            >
+                                {feedbackMessage}
+                            </p>
+                        )}
+                    </form>
+                </div>
+            )}
         </div>
     );
 }
 
-// --------------------------------------------------
-// Styles
-// --------------------------------------------------
-
 const styles = {
-
     page: {
         maxWidth: "1100px",
         margin: "0 auto",
         padding: "25px",
-        fontFamily: "Arial, sans-serif"
+        fontFamily: "Arial, sans-serif",
     },
 
     subtitle: {
         color: "#555",
-        marginBottom: "25px"
+        marginBottom: "25px",
     },
 
     card: {
@@ -782,15 +827,14 @@ const styles = {
         padding: "20px",
         marginBottom: "15px",
         borderRadius: "10px",
-        boxShadow:
-            "0 2px 8px rgba(0,0,0,0.1)"
+        boxShadow: "0 2px 8px rgba(0,0,0,0.1)",
     },
 
     label: {
         display: "block",
         fontSize: "18px",
         fontWeight: "bold",
-        marginBottom: "10px"
+        marginBottom: "10px",
     },
 
     select: {
@@ -799,17 +843,18 @@ const styles = {
         fontSize: "16px",
         borderRadius: "6px",
         border: "1px solid #ccc",
-        background: "#fff"
+        background: "#fff",
+        boxSizing: "border-box",
     },
 
     helpText: {
         color: "#777",
-        marginTop: "8px"
+        marginTop: "8px",
     },
 
     warning: {
-        color: "#b36b00",
-        marginTop: "8px"
+        color: "#a15c00",
+        marginTop: "8px",
     },
 
     error: {
@@ -817,7 +862,7 @@ const styles = {
         color: "#b00020",
         padding: "15px",
         borderRadius: "8px",
-        marginBottom: "15px"
+        marginBottom: "15px",
     },
 
     routeCard: {
@@ -825,7 +870,7 @@ const styles = {
         padding: "20px",
         marginBottom: "15px",
         borderRadius: "10px",
-        border: "1px solid #cce0ff"
+        border: "1px solid #cce0ff",
     },
 
     statusCard: {
@@ -833,19 +878,19 @@ const styles = {
         padding: "20px",
         marginBottom: "20px",
         borderRadius: "10px",
-        border: "1px solid #b8e6b8"
+        border: "1px solid #b8e6b8",
     },
 
     mapSection: {
         marginTop: "25px",
-        marginBottom: "25px"
+        marginBottom: "25px",
     },
 
     map: {
         height: "500px",
         width: "100%",
         borderRadius: "10px",
-        overflow: "hidden"
+        overflow: "hidden",
     },
 
     stopsCard: {
@@ -853,14 +898,61 @@ const styles = {
         padding: "20px",
         marginTop: "20px",
         borderRadius: "10px",
-        boxShadow:
-            "0 2px 8px rgba(0,0,0,0.1)"
+        boxShadow: "0 2px 8px rgba(0,0,0,0.1)",
     },
 
     stopItem: {
         padding: "8px",
-        fontSize: "16px"
-    }
+        fontSize: "16px",
+    },
+
+    feedbackCard: {
+        background: "#ffffff",
+        padding: "20px",
+        marginTop: "25px",
+        marginBottom: "25px",
+        borderRadius: "10px",
+        boxShadow: "0 2px 8px rgba(0,0,0,0.1)",
+    },
+
+    stars: {
+        display: "flex",
+        gap: "8px",
+        margin: "10px 0",
+    },
+
+    starButton: {
+        border: "none",
+        background: "transparent",
+        fontSize: "35px",
+        cursor: "pointer",
+        padding: "2px",
+    },
+
+    feedbackTextarea: {
+        width: "100%",
+        boxSizing: "border-box",
+        padding: "12px",
+        borderRadius: "6px",
+        border: "1px solid #ccc",
+        fontSize: "15px",
+        resize: "vertical",
+    },
+
+    feedbackButton: {
+        padding: "12px 20px",
+        background: "#2563eb",
+        color: "#ffffff",
+        border: "none",
+        borderRadius: "6px",
+        cursor: "pointer",
+        fontWeight: "bold",
+    },
+
+    feedbackMessage: {
+        marginTop: "12px",
+        fontWeight: "bold",
+    },
 };
 
 export default StudentTracking;

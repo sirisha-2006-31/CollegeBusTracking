@@ -1,3 +1,4 @@
+
 import React, { useState } from "react";
 import axios from "axios";
 import { useNavigate } from "react-router-dom";
@@ -5,19 +6,17 @@ import { useNavigate } from "react-router-dom";
 function Login() {
     const navigate = useNavigate();
 
-    // Always start empty
+    // Start with empty fields every time the page opens
     const [email, setEmail] = useState("");
     const [password, setPassword] = useState("");
-
     const [error, setError] = useState("");
     const [loading, setLoading] = useState(false);
 
     const handleLogin = async (e) => {
         e.preventDefault();
-
         setError("");
 
-        if (!email || !password) {
+        if (!email.trim() || !password) {
             setError("Please enter email and password.");
             return;
         }
@@ -28,47 +27,49 @@ function Login() {
             const response = await axios.post(
                 "http://localhost:5000/api/auth/login",
                 {
-                    email: email,
+                    email: email.trim(),
                     password: password,
                 }
             );
 
-            console.log("Login successful:", response.data);
+            const { token, user } = response.data;
 
-            // Save login information only after successful login
-            if (response.data.token) {
-                localStorage.setItem(
-                    "token",
-                    response.data.token
+            // Ensure login response contains authentication details
+            if (!token || !user) {
+                setError(
+                    "Login response is incomplete. Please contact the administrator."
                 );
+                return;
             }
 
-            if (response.data.user) {
-                localStorage.setItem(
-                    "user",
-                    JSON.stringify(response.data.user)
-                );
-            }
+            // Save authentication details after successful login
+            localStorage.setItem("token", token);
+            localStorage.setItem("user", JSON.stringify(user));
 
-            // Clear form after successful login
+            // Clear form fields
             setEmail("");
             setPassword("");
-
-            // Go based on role
-            if (response.data.user?.role === "admin") {
-                navigate("/admin");
-            } else if (
-                response.data.user?.role === "driver"
-            ) {
-                navigate("/driver");
+            const role = String(user.role || "").trim().toLowerCase();
+            // Redirect according to account role
+            if (role === "admin") {
+                navigate("/admin", { replace: true });
+            } else if (role === "driver") {
+                navigate("/driver", { replace: true });
+            } else if (role === "student" ||role === "parent") {
+                navigate("/student", { replace: true });
             } else {
-                navigate("/");
+                // Keep compatibility with existing regular user accounts
+                localStorage.removeItem("token");
+                localStorage.removeItem("user");
+                setError("Your account role is invalid. Please contact the administrator.");
             }
         } catch (err) {
             console.error("Login error:", err);
 
             if (err.response?.data?.message) {
                 setError(err.response.data.message);
+            } else if (err.response?.status === 401) {
+                setError("Invalid email or password.");
             } else {
                 setError(
                     "Login failed. Please check your email and password."
@@ -82,68 +83,65 @@ function Login() {
     return (
         <div style={styles.container}>
             <div style={styles.card}>
-                <h2 style={styles.title}>
-                    🔐 Login
-                </h2>
+                <h2 style={styles.title}>🔐 Login</h2>
 
-                <form
-                    onSubmit={handleLogin}
-                    autoComplete="off"
-                >
-                    {/* EMAIL */}
+                <p style={styles.subtitle}>
+                    Students and parents can log in to track their college bus.
+                </p>
+
+                <form onSubmit={handleLogin} autoComplete="off">
                     <div style={styles.inputGroup}>
-                        <label style={styles.label}>
+                        <label htmlFor="login-email" style={styles.label}>
                             Email
                         </label>
 
                         <input
+                            id="login-email"
                             type="email"
                             value={email}
-                            onChange={(e) =>
-                                setEmail(e.target.value)
-                            }
+                            onChange={(e) => setEmail(e.target.value)}
                             placeholder="Enter your email"
                             autoComplete="off"
                             name="login-email"
                             style={styles.input}
+                            required
                         />
                     </div>
 
-                    {/* PASSWORD */}
                     <div style={styles.inputGroup}>
-                        <label style={styles.label}>
+                        <label htmlFor="login-password" style={styles.label}>
                             Password
                         </label>
 
                         <input
+                            id="login-password"
                             type="password"
                             value={password}
-                            onChange={(e) =>
-                                setPassword(e.target.value)
-                            }
+                            onChange={(e) => setPassword(e.target.value)}
                             placeholder="Enter your password"
-                            autoComplete="new-password"
+                            autoComplete="current-password"
                             name="login-password"
                             style={styles.input}
+                            required
                         />
                     </div>
 
-                    {/* ERROR */}
                     {error && (
-                        <div style={styles.error}>
+                        <div role="alert" style={styles.error}>
                             {error}
                         </div>
                     )}
 
-                    {/* LOGIN BUTTON */}
                     <button
                         type="submit"
                         disabled={loading}
-                        style={styles.button}
+                        style={{
+                            ...styles.button,
+                            opacity: loading ? 0.7 : 1,
+                            cursor: loading ? "not-allowed" : "pointer",
+                        }}
                     >
-                        {loading
-                            ? "Logging in..."
-                            : "Login"}
+                        {loading ? "Logging in..." : "Login"}
                     </button>
                 </form>
 
@@ -152,11 +150,22 @@ function Login() {
                 </p>
 
                 <button
+                    type="button"
                     onClick={() => navigate("/register")}
                     style={styles.registerButton}
                 >
                     Create Account
                 </button>
+
+                <p style={styles.homeText}>
+                    <button
+                        type="button"
+                        onClick={() => navigate("/")}
+                        style={styles.homeButton}
+                    >
+                        Back to Home
+                    </button>
+                </p>
             </div>
         </div>
     );
@@ -169,11 +178,13 @@ const styles = {
         justifyContent: "center",
         alignItems: "center",
         padding: "20px",
+        fontFamily: "Arial, sans-serif",
     },
 
     card: {
         width: "100%",
         maxWidth: "420px",
+        boxSizing: "border-box",
         padding: "30px",
         borderRadius: "12px",
         background: "#ffffff",
@@ -182,7 +193,15 @@ const styles = {
 
     title: {
         textAlign: "center",
+        marginBottom: "12px",
+        color: "#1e3a8a",
+    },
+
+    subtitle: {
+        textAlign: "center",
+        color: "#555",
         marginBottom: "25px",
+        lineHeight: 1.5,
     },
 
     inputGroup: {
@@ -193,6 +212,7 @@ const styles = {
         display: "block",
         marginBottom: "7px",
         fontWeight: "bold",
+        color: "#333",
     },
 
     input: {
@@ -210,6 +230,7 @@ const styles = {
         padding: "10px",
         borderRadius: "6px",
         marginBottom: "15px",
+        lineHeight: 1.5,
     },
 
     button: {
@@ -225,8 +246,9 @@ const styles = {
 
     registerText: {
         textAlign: "center",
-        marginTop: "20px",
-        marginBottom: "8px",
+        marginTop: "22px",
+        marginBottom: "10px",
+        color: "#444",
     },
 
     registerButton: {
@@ -238,6 +260,21 @@ const styles = {
         background: "white",
         color: "#1976d2",
         cursor: "pointer",
+    },
+
+    homeText: {
+        textAlign: "center",
+        marginTop: "16px",
+        marginBottom: 0,
+    },
+
+    homeButton: {
+        border: "none",
+        background: "transparent",
+        color: "#555",
+        cursor: "pointer",
+        textDecoration: "underline",
+        fontSize: "14px",
     },
 };
 

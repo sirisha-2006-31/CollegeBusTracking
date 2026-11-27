@@ -3,6 +3,7 @@ const cors = require("cors");
 const mongoose = require("mongoose");
 const http = require("http");
 const { Server } = require("socket.io");
+const feedbackRoutes = require("./routes/feedback");
 require("dotenv").config();
 
 const app = express();
@@ -14,7 +15,8 @@ app.use("/api/buses", require("./routes/busRoutes"));
 app.use("/api/drivers", require("./routes/driverRoutes"));
 app.use("/api/routes", require("./routes/routeRoutes"));
 app.use("/api/bus-stops", require("./routes/busStopRoutes"));
-
+app.use("/api/students", require("./routes/studentRoutes"));
+app.use("/api/feedback", feedbackRoutes);
 const server = http.createServer(app);
 const io = new Server(server, {
     cors: { origin: "http://localhost:5173", methods: ["GET", "POST"] }

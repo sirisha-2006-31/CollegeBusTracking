@@ -1,311 +1,321 @@
 import React, { useState } from "react";
+import { Link, useNavigate } from "react-router-dom";
 import axios from "axios";
-import { useNavigate } from "react-router-dom";
+
+const API = "http://localhost:5000/api/auth";
 
 function Register() {
-    const navigate = useNavigate();
+  const navigate = useNavigate();
+  const [role, setRole] = useState("admin");
 
-    // Always start with empty fields
-    const [name, setName] = useState("");
-    const [email, setEmail] = useState("");
-    const [password, setPassword] = useState("");
-    const [role, setRole] = useState("");
+  const [form, setForm] = useState({
+    name: "",
+    email: "",
+    password: "",
+    setupKey: "",
+    parentName: "",
+    parentEmail: "",
+    phone: "",
+    licenseNumber: "",
+    busNumber: "BUS001"
+  });
 
-    const [error, setError] = useState("");
-    const [success, setSuccess] = useState("");
-    const [loading, setLoading] = useState(false);
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
 
-    const handleRegister = async (e) => {
-        e.preventDefault();
+  const handleChange = (e) => {
+    setForm({
+      ...form,
+      [e.target.name]: e.target.value
+    });
+  };
 
-        setError("");
-        setSuccess("");
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setMessage("");
+    setError("");
 
-        // Validation
-        if (!name || !email || !password || !role) {
-            setError("Please fill all fields.");
-            return;
-        }
+    if (
+      role === "student" &&
+      form.email.trim().toLowerCase() ===
+        form.parentEmail.trim().toLowerCase()
+    ) {
+      setError("Student and parent emails must be different.");
+      return;
+    }
 
-        try {
-            setLoading(true);
+    setLoading(true);
 
-            const response = await axios.post(
-                "http://localhost:5000/api/auth/register",
-                {
-                    name: name,
-                    email: email,
-                    password: password,
-                    role: role,
-                }
-            );
+    try {
+      let endpoint;
+      let payload;
 
-            console.log(
-                "Registration successful:",
-                response.data
-            );
+      if (role === "admin") {
+        endpoint = `${API}/admin-register`;
+        payload = {
+          name: form.name,
+          email: form.email,
+          password: form.password,
+          setupKey: form.setupKey
+        };
+      } else if (role === "driver") {
+        endpoint = `${API}/driver-register`;
+        payload = {
+          name: form.name,
+          email: form.email,
+          password: form.password,
+          phone: form.phone,
+          licenseNumber: form.licenseNumber
+        };
+      } else if (role === "parent") {
+        endpoint = `${API}/parent-register`;
+        payload = {
+          name: form.name,
+          email: form.email,
+          password: form.password
+        };
+      } else {
+        endpoint = `${API}/register`;
+        payload = {
+          name: form.name,
+          email: form.email,
+          password: form.password,
+          parentName: form.parentName,
+          parentEmail: form.parentEmail,
+          busNumber: form.busNumber
+        };
+      }
 
-            setSuccess(
-                "Registration successful! You can now login."
-            );
+      const response = await axios.post(endpoint, payload);
 
-            // Clear all fields after successful registration
-            setName("");
-            setEmail("");
-            setPassword("");
-            setRole("");
+      setMessage(
+        response.data.message || "Registration successful!"
+      );
 
-        } catch (err) {
-            console.error("Registration error:", err);
+      setTimeout(() => navigate("/login"), 1500);
+    } catch (err) {
+      setError(
+        err.response?.data?.message ||
+          "Registration failed. Please try again."
+      );
+    } finally {
+      setLoading(false);
+    }
+  };
 
-            if (err.response?.data?.message) {
-                setError(err.response.data.message);
-            } else {
-                setError(
-                    "Registration failed. Please try again."
-                );
-            }
-        } finally {
-            setLoading(false);
-        }
-    };
+  return (
+    <div style={styles.container}>
+      <h2 style={{ textAlign: "center" }}>📝 Register</h2>
 
-    return (
-        <div style={styles.container}>
-            <div style={styles.card}>
-                <h2 style={styles.title}>
-                    📝 Register
-                </h2>
+      <label>Select Role</label>
 
-                <form
-                    onSubmit={handleRegister}
-                    autoComplete="off"
-                >
-                    {/* NAME */}
-                    <div style={styles.inputGroup}>
-                        <label style={styles.label}>
-                            Name
-                        </label>
+      <select
+        value={role}
+        onChange={(e) => {
+          setRole(e.target.value);
+          setMessage("");
+          setError("");
+        }}
+        style={styles.input}
+      >
+        <option value="admin">Admin</option>
+        <option value="student">Student</option>
+        <option value="parent">Parent</option>
+        <option value="driver">Bus Driver</option>
+      </select>
 
-                        <input
-                            type="text"
-                            name="register-name"
-                            value={name}
-                            onChange={(e) =>
-                                setName(e.target.value)
-                            }
-                            placeholder="Enter your name"
-                            autoComplete="off"
-                            style={styles.input}
-                        />
-                    </div>
+      <form onSubmit={handleSubmit}>
+        <label>
+          {role === "student"
+            ? "Student Name"
+            : role === "parent"
+            ? "Parent Name"
+            : role === "driver"
+            ? "Driver Name"
+            : "Admin Name"}
+        </label>
 
-                    {/* EMAIL */}
-                    <div style={styles.inputGroup}>
-                        <label style={styles.label}>
-                            Email
-                        </label>
+        <input
+          name="name"
+          value={form.name}
+          onChange={handleChange}
+          placeholder="Enter full name"
+          required
+          style={styles.input}
+        />
 
-                        <input
-                            type="email"
-                            name="register-email"
-                            value={email}
-                            onChange={(e) =>
-                                setEmail(e.target.value)
-                            }
-                            placeholder="Enter your email"
-                            autoComplete="off"
-                            style={styles.input}
-                        />
-                    </div>
+        <label>Email</label>
 
-                    {/* PASSWORD */}
-                    <div style={styles.inputGroup}>
-                        <label style={styles.label}>
-                            Password
-                        </label>
+        <input
+          type="email"
+          name="email"
+          value={form.email}
+          onChange={handleChange}
+          placeholder="Enter email address"
+          required
+          style={styles.input}
+        />
 
-                        <input
-                            type="password"
-                            name="register-password"
-                            value={password}
-                            onChange={(e) =>
-                                setPassword(e.target.value)
-                            }
-                            placeholder="Enter your password"
-                            autoComplete="new-password"
-                            style={styles.input}
-                        />
-                    </div>
+        <label>Password</label>
 
-                    {/* ROLE */}
-                    <div style={styles.inputGroup}>
-                        <label style={styles.label}>
-                            Role
-                        </label>
+        <input
+          type="password"
+          name="password"
+          value={form.password}
+          onChange={handleChange}
+          minLength={8}
+          placeholder="At least 8 characters"
+          required
+          style={styles.input}
+        />
 
-                        <select
-                            name="register-role"
-                            value={role}
-                            onChange={(e) =>
-                                setRole(e.target.value)
-                            }
-                            style={styles.select}
-                        >
-                            <option value="">
-                                Select role
-                            </option>
+        {role === "admin" && (
+          <>
+            <label>Admin Setup Key</label>
+            <input
+              type="password"
+              name="setupKey"
+              value={form.setupKey}
+              onChange={handleChange}
+              placeholder="Enter private setup key"
+              required
+              style={styles.input}
+            />
+            <p style={styles.note}>
+              Only the first Admin can register. Keep the
+              setup key private.
+            </p>
+          </>
+        )}
 
-                            <option value="student">
-                                Student
-                            </option>
+        {role === "student" && (
+          <>
+            <label>Parent Name</label>
+            <input
+              name="parentName"
+              value={form.parentName}
+              onChange={handleChange}
+              placeholder="Enter parent name"
+              required
+              style={styles.input}
+            />
 
-                            <option value="driver">
-                                Driver
-                            </option>
+            <label>Parent Email</label>
+            <input
+              type="email"
+              name="parentEmail"
+              value={form.parentEmail}
+              onChange={handleChange}
+              placeholder="Enter parent email"
+              required
+              style={styles.input}
+            />
 
-                            <option value="admin">
-                                Admin
-                            </option>
-                        </select>
-                    </div>
+            <label>Select Bus</label>
+            <select
+              name="busNumber"
+              value={form.busNumber}
+              onChange={handleChange}
+              style={styles.input}
+            >
+              <option value="BUS001">BUS001</option>
+              <option value="BUS003">BUS003</option>
+            </select>
+          </>
+        )}
 
-                    {/* ERROR */}
-                    {error && (
-                        <div style={styles.error}>
-                            {error}
-                        </div>
-                    )}
+        {role === "driver" && (
+          <>
+            <label>Phone Number</label>
+            <input
+              type="tel"
+              name="phone"
+              value={form.phone}
+              onChange={handleChange}
+              placeholder="Enter phone number"
+              required
+              style={styles.input}
+            />
 
-                    {/* SUCCESS */}
-                    {success && (
-                        <div style={styles.success}>
-                            {success}
-                        </div>
-                    )}
+            <label>Driving License Number</label>
+            <input
+              name="licenseNumber"
+              value={form.licenseNumber}
+              onChange={handleChange}
+              placeholder="Enter license number"
+              required
+              style={styles.input}
+            />
 
-                    {/* REGISTER BUTTON */}
-                    <button
-                        type="submit"
-                        disabled={loading}
-                        style={styles.button}
-                    >
-                        {loading
-                            ? "Registering..."
-                            : "Register"}
-                    </button>
-                </form>
+            <p style={styles.note}>
+              Register with the exact name and email assigned
+              by your Admin. Your bus is assigned by the Admin.
+            </p>
+          </>
+        )}
 
-                <p style={styles.loginText}>
-                    Already have an account?
-                </p>
+        {message && (
+          <p style={{ color: "green" }}>{message}</p>
+        )}
 
-                <button
-                    onClick={() => navigate("/login")}
-                    style={styles.loginButton}
-                >
-                    Login
-                </button>
-            </div>
-        </div>
-    );
+        {error && (
+          <p style={{ color: "red" }}>{error}</p>
+        )}
+
+        <button
+          type="submit"
+          disabled={loading}
+          style={styles.button}
+        >
+          {loading ? "Registering..." : "Register"}
+        </button>
+      </form>
+
+      <p style={{ textAlign: "center", marginTop: 20 }}>
+        Already have an account? <Link to="/login">Login</Link>
+      </p>
+    </div>
+  );
 }
 
 const styles = {
-    container: {
-        minHeight: "80vh",
-        display: "flex",
-        justifyContent: "center",
-        alignItems: "center",
-        padding: "20px",
-    },
-
-    card: {
-        width: "100%",
-        maxWidth: "420px",
-        padding: "30px",
-        borderRadius: "12px",
-        background: "#ffffff",
-        boxShadow: "0 4px 15px rgba(0,0,0,0.15)",
-    },
-
-    title: {
-        textAlign: "center",
-        marginBottom: "25px",
-    },
-
-    inputGroup: {
-        marginBottom: "18px",
-    },
-
-    label: {
-        display: "block",
-        marginBottom: "7px",
-        fontWeight: "bold",
-    },
-
-    input: {
-        width: "100%",
-        boxSizing: "border-box",
-        padding: "12px",
-        fontSize: "16px",
-        borderRadius: "6px",
-        border: "1px solid #ccc",
-    },
-
-    select: {
-        width: "100%",
-        boxSizing: "border-box",
-        padding: "12px",
-        fontSize: "16px",
-        borderRadius: "6px",
-        border: "1px solid #ccc",
-        background: "white",
-    },
-
-    error: {
-        background: "#ffe0e0",
-        color: "#b00020",
-        padding: "10px",
-        borderRadius: "6px",
-        marginBottom: "15px",
-    },
-
-    success: {
-        background: "#e0ffe5",
-        color: "#087f23",
-        padding: "10px",
-        borderRadius: "6px",
-        marginBottom: "15px",
-    },
-
-    button: {
-        width: "100%",
-        padding: "12px",
-        fontSize: "16px",
-        border: "none",
-        borderRadius: "6px",
-        background: "#1976d2",
-        color: "white",
-        cursor: "pointer",
-    },
-
-    loginText: {
-        textAlign: "center",
-        marginTop: "20px",
-        marginBottom: "8px",
-    },
-
-    loginButton: {
-        width: "100%",
-        padding: "10px",
-        fontSize: "15px",
-        border: "1px solid #1976d2",
-        borderRadius: "6px",
-        background: "white",
-        color: "#1976d2",
-        cursor: "pointer",
-    },
+  container: {
+    maxWidth: 650,
+    margin: "35px auto",
+    padding: 35,
+    borderRadius: 16,
+    boxShadow: "0 0 20px #ddd",
+    background: "white",
+    fontFamily: "Arial, sans-serif"
+  },
+  input: {
+    display: "block",
+    width: "100%",
+    padding: 12,
+    marginTop: 8,
+    marginBottom: 20,
+    boxSizing: "border-box",
+    border: "1px solid #ccc",
+    borderRadius: 7,
+    fontSize: 16
+  },
+  button: {
+    width: "100%",
+    padding: 14,
+    background: "#1976d2",
+    color: "white",
+    border: "none",
+    borderRadius: 7,
+    fontSize: 17,
+    cursor: "pointer"
+  },
+  note: {
+    background: "#f2f6fc",
+    padding: 12,
+    borderRadius: 7,
+    lineHeight: 1.5
+  }
 };
 
 export default Register;
